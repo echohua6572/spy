@@ -4,6 +4,10 @@
 !requirements.txt
 !.streamlit/
 !.streamlit/config.toml
+!.github/
+!.github/workflows/
+!.github/workflows/update-history.yml
+!update_history_cache.py
 !spy_current_stock_holdings.csv
 !spy_holdings_prices.csv
 !README.md
