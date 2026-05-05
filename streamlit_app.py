@@ -238,6 +238,9 @@ def format_positions(frame: pd.DataFrame) -> pd.io.formats.style.Styler:
 
 def main() -> None:
     prices, holdings = load_data()
+    cache_date = prices.index[-1].date()
+    today = pd.Timestamp.utcnow().date()
+    cache_age_days = max(0, (today - cache_date).days)
 
     st.title("SPY 持仓股 Top10 综合动量监控")
     st.caption(
@@ -252,7 +255,6 @@ def main() -> None:
         refresh = st.button("刷新最新报价", type="primary", use_container_width=True)
         st.divider()
         st.write(f"股票池数量：{len(prices.columns)}")
-        st.write(f"历史动量基准截至：{prices.index[-1].date().isoformat()}")
         st.write(f"交易成本假设：{TRADE_COST:.2%} 换手额")
         st.info(
             "最新价格会在打开页面或点击刷新时实时拉取。"
@@ -301,11 +303,12 @@ def main() -> None:
         top_n,
     )
 
-    col1, col2, col3, col4 = st.columns(4)
+    col1, col2, col3, col4, col5 = st.columns(5)
     col1.metric("最近月末调仓日", rebalance_date.date().isoformat())
     col2.metric("最新报价日期", quote_date)
     col3.metric("成功报价数", f"{len(quotes)} / {len(prices.columns)}")
-    col4.metric("刷新时间", st.session_state.get("quote_refreshed_at", "--"))
+    col4.metric("历史缓存截至", cache_date.isoformat(), delta=f"{cache_age_days} 天前")
+    col5.metric("刷新时间", st.session_state.get("quote_refreshed_at", "--"))
 
     tab1, tab2, tab3 = st.tabs(["月度策略应持仓", "今日重算候选", "说明"])
 
