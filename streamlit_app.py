@@ -17,6 +17,9 @@ PRICE_FILE = ROOT / "spy_holdings_prices.csv"
 HOLDINGS_FILE = ROOT / "spy_current_stock_holdings.csv"
 DEFAULT_TOP_N = 10
 TRADE_COST = 0.001
+DEFAULT_GITHUB_REPOSITORY = "echohua6572/spy"
+DEFAULT_GITHUB_WORKFLOW = "update-history.yml"
+DEFAULT_GITHUB_REF = "main"
 
 
 st.set_page_config(
@@ -76,6 +79,48 @@ def yahoo_spark_quotes(symbols: list[str]) -> dict[str, dict[str, object]]:
 
     progress.empty()
     return quotes
+
+
+def secret_value(name: str, default: str | None = None) -> str | None:
+    try:
+        return st.secrets.get(name, default)
+    except Exception:
+        return default
+
+
+def trigger_history_update() -> tuple[bool, str]:
+    token = secret_value("GITHUB_TOKEN")
+    repository = secret_value("GITHUB_REPOSITORY", DEFAULT_GITHUB_REPOSITORY)
+    workflow = secret_value("GITHUB_WORKFLOW", DEFAULT_GITHUB_WORKFLOW)
+    ref = secret_value("GITHUB_REF", DEFAULT_GITHUB_REF)
+
+    if not token:
+        return (
+            False,
+            "未配置 GITHUB_TOKEN。请在 Streamlit Cloud 的 App settings -> Secrets 中添加后再使用网页按钮。",
+        )
+
+    url = f"https://api.github.com/repos/{repository}/actions/workflows/{workflow}/dispatches"
+    payload = json.dumps({"ref": ref}).encode("utf-8")
+    req = urllib.request.Request(
+        url,
+        data=payload,
+        method="POST",
+        headers={
+            "Accept": "application/vnd.github+json",
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+            "User-Agent": "streamlit-spy-momentum-monitor",
+            "X-GitHub-Api-Version": "2022-11-28",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as response:
+            if response.status == 204:
+                return True, "已触发 GitHub Actions 后台更新。通常需要几分钟完成。"
+            return False, f"GitHub 返回非预期状态：{response.status}"
+    except Exception as exc:
+        return False, f"触发失败：{exc}"
 
 
 def updated_prices_with_quotes(prices: pd.DataFrame, quotes: dict[str, dict[str, object]]) -> tuple[pd.DataFrame, str]:
@@ -213,6 +258,18 @@ def main() -> None:
             "最新价格会在打开页面或点击刷新时实时拉取。"
             "历史价格缓存不是当前报价，而是为了避免每次打开页面都重新下载 500 只股票的一年以上历史K线。"
         )
+        st.divider()
+        st.subheader("历史缓存")
+        if st.button("触发后台更新历史缓存", use_container_width=True):
+            ok, message = trigger_history_update()
+            if ok:
+                st.success(message)
+            else:
+                st.warning(message)
+                st.caption(
+                    "需要一个 GitHub fine-grained token，至少允许该仓库的 Actions: Read and write。"
+                    "配置到 Streamlit Secrets 后，按钮会触发 update-history.yml。"
+                )
 
     if "quotes" not in st.session_state or refresh:
         quotes = yahoo_spark_quotes(list(prices.columns))
