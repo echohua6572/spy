@@ -9,6 +9,7 @@ import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 
@@ -17,6 +18,7 @@ ROOT = Path(__file__).resolve().parent
 PRICE_FILE = ROOT / "spy_holdings_prices.csv"
 HOLDINGS_FILE = ROOT / "spy_current_stock_holdings.csv"
 FAILURE_FILE = ROOT / "spy_history_update_failures.csv"
+STATUS_FILE = ROOT / "spy_history_update_status.json"
 HOLDINGS_URL = "https://companiesmarketcap.com/eur/spdr-sp-500-etf/holdings/"
 USER_AGENT = "Mozilla/5.0"
 HISTORY_DAYS_FOR_NEW_SYMBOLS = 550
@@ -99,6 +101,17 @@ def load_existing_prices() -> pd.DataFrame:
     return pd.DataFrame()
 
 
+def write_status(status: str, message: str, cache_date: str | None = None, market_date: str | None = None) -> None:
+    payload = {
+        "status": status,
+        "message": message,
+        "cacheDate": cache_date,
+        "marketDate": market_date,
+        "updatedAt": datetime.now().astimezone().isoformat(timespec="seconds"),
+    }
+    STATUS_FILE.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
 def symbol_start_date(existing: pd.DataFrame, symbol: str, today: pd.Timestamp) -> pd.Timestamp:
     if symbol in existing.columns:
         series = existing[symbol].dropna()
@@ -107,12 +120,34 @@ def symbol_start_date(existing: pd.DataFrame, symbol: str, today: pd.Timestamp) 
     return today - pd.Timedelta(days=HISTORY_DAYS_FOR_NEW_SYMBOLS)
 
 
+def latest_completed_market_date(spy_series: pd.Series) -> str | None:
+    if spy_series.empty:
+        return None
+    now_ny = datetime.now(ZoneInfo("America/New_York"))
+    cutoff_date = now_ny.date()
+    if now_ny.hour < 18 or (now_ny.hour == 18 and now_ny.minute < 30):
+        cutoff_date = (pd.Timestamp(cutoff_date) - pd.Timedelta(days=1)).date()
+    eligible = spy_series[spy_series.index.date <= cutoff_date]
+    if eligible.empty:
+        return None
+    return eligible.index[-1].date().isoformat()
+
+
 def main() -> None:
-    today = pd.Timestamp.utcnow().normalize().tz_localize(None) + pd.Timedelta(days=1)
+    today = pd.Timestamp.now("UTC").normalize().tz_localize(None) + pd.Timedelta(days=1)
+    existing = load_existing_prices()
+    cache_date = existing.index[-1].date().isoformat() if not existing.empty else None
+    spy_latest = fetch_with_retries("SPY", today - pd.Timedelta(days=14), today)
+    market_date = latest_completed_market_date(spy_latest)
+    if cache_date and market_date and pd.Timestamp(cache_date) >= pd.Timestamp(market_date):
+        message = f"缓存已是最新：{cache_date}，市场最新日线：{market_date}"
+        safe_print(message)
+        write_status("skipped", message, cache_date, market_date)
+        return
+
     holdings = fetch_spy_stock_holdings()
     holdings.to_csv(HOLDINGS_FILE, index=False, encoding="utf-8-sig")
     symbols = holdings["Ticker"].tolist()
-    existing = load_existing_prices()
     updated = existing.copy()
     failures = []
 
@@ -136,9 +171,28 @@ def main() -> None:
     if failures:
         pd.DataFrame(failures).to_csv(FAILURE_FILE, index=False, encoding="utf-8-sig")
         safe_print(f"Failures: {len(failures)}")
+        write_status(
+            "completed_with_failures",
+            f"更新完成，但有 {len(failures)} 个失败",
+            updated.index[-1].date().isoformat() if not updated.empty else cache_date,
+            market_date,
+        )
     elif FAILURE_FILE.exists():
         FAILURE_FILE.unlink()
         safe_print("No failures")
+        write_status(
+            "completed",
+            "历史缓存更新完成",
+            updated.index[-1].date().isoformat() if not updated.empty else cache_date,
+            market_date,
+        )
+    else:
+        write_status(
+            "completed",
+            "历史缓存更新完成",
+            updated.index[-1].date().isoformat() if not updated.empty else cache_date,
+            market_date,
+        )
 
 
 if __name__ == "__main__":
