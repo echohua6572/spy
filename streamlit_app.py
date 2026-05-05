@@ -195,7 +195,10 @@ def main() -> None:
     prices, holdings = load_data()
 
     st.title("SPY 持仓股 Top10 综合动量监控")
-    st.caption("月度轮动策略：每月最后一个交易日，选择 SPY 当前持仓股中综合动量排名前 N 的股票，等权持有。")
+    st.caption(
+        "月度轮动策略：每月最后一个交易日，选择 SPY 当前持仓股中综合动量排名前 N 的股票，等权持有。"
+        "页面打开时会刷新最新报价；仓库里的历史价格文件只用于计算 1M/3M/6M/12M 动量窗口。"
+    )
 
     with st.sidebar:
         st.header("参数")
@@ -204,8 +207,12 @@ def main() -> None:
         refresh = st.button("刷新最新报价", type="primary", use_container_width=True)
         st.divider()
         st.write(f"股票池数量：{len(prices.columns)}")
-        st.write(f"历史价格截至：{prices.index[-1].date().isoformat()}")
+        st.write(f"历史动量基准截至：{prices.index[-1].date().isoformat()}")
         st.write(f"交易成本假设：{TRADE_COST:.2%} 换手额")
+        st.info(
+            "最新价格会在打开页面或点击刷新时实时拉取。"
+            "历史价格缓存不是当前报价，而是为了避免每次打开页面都重新下载 500 只股票的一年以上历史K线。"
+        )
 
     if "quotes" not in st.session_state or refresh:
         quotes = yahoo_spark_quotes(list(prices.columns))
@@ -274,7 +281,8 @@ def main() -> None:
             **实盘口径**
 
             - 月度策略默认使用最近一次完整月末的动量排名。
-            - 刷新按钮会重新拉取 Yahoo 最新报价，并重算月度持仓和今日候选。
+            - 页面首次打开和刷新按钮都会重新拉取 Yahoo 最新报价，并重算月度持仓和今日候选。
+            - `spy_holdings_prices.csv` 是历史动量窗口缓存，不是当前报价缓存。
             - 股数按整股向下取整，剩余金额显示为现金。
             - 当前股票池使用本项目内的 `spy_current_stock_holdings.csv`，属于当前成分股口径，存在幸存者偏差。
             """
