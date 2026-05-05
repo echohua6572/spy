@@ -7,6 +7,7 @@ import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 import streamlit as st
@@ -20,6 +21,7 @@ TRADE_COST = 0.001
 DEFAULT_GITHUB_REPOSITORY = "echohua6572/spy"
 DEFAULT_GITHUB_WORKFLOW = "update-history.yml"
 DEFAULT_GITHUB_REF = "main"
+DISPLAY_TZ = ZoneInfo("Asia/Shanghai")
 
 
 st.set_page_config(
@@ -120,7 +122,11 @@ def trigger_history_update() -> tuple[bool, str]:
                 return True, "已触发 GitHub Actions 后台更新。通常需要几分钟完成。"
             return False, f"GitHub 返回非预期状态：{response.status}"
     except Exception as exc:
-        return False, f"触发失败：{exc}"
+            return False, f"触发失败：{exc}"
+
+
+def display_time_now() -> str:
+    return datetime.now(DISPLAY_TZ).strftime("%Y-%m-%d %H:%M:%S CST")
 
 
 def updated_prices_with_quotes(prices: pd.DataFrame, quotes: dict[str, dict[str, object]]) -> tuple[pd.DataFrame, str]:
@@ -276,7 +282,7 @@ def main() -> None:
     if "quotes" not in st.session_state or refresh:
         quotes = yahoo_spark_quotes(list(prices.columns))
         st.session_state["quotes"] = quotes
-        st.session_state["quote_refreshed_at"] = datetime.now().astimezone().isoformat(timespec="seconds")
+        st.session_state["quote_refreshed_at"] = display_time_now()
     else:
         quotes = st.session_state["quotes"]
 
