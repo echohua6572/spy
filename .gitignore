@@ -1,0 +1,9 @@
+*
+!.gitignore
+!streamlit_app.py
+!requirements.txt
+!.streamlit/
+!.streamlit/config.toml
+!spy_current_stock_holdings.csv
+!spy_holdings_prices.csv
+!README.md
