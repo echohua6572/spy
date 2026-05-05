@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import json
 import random
+import sys
 import time
 import urllib.parse
 import urllib.request
@@ -22,6 +23,11 @@ HISTORY_DAYS_FOR_NEW_SYMBOLS = 550
 OVERLAP_DAYS = 10
 REQUEST_DELAY_SECONDS = 0.35
 MAX_RETRIES = 3
+
+
+def safe_print(message: str) -> None:
+    if sys.stdout:
+        print(message)
 
 
 def fetch_spy_stock_holdings() -> pd.DataFrame:
@@ -82,7 +88,7 @@ def fetch_with_retries(symbol: str, start: pd.Timestamp, end: pd.Timestamp) -> p
         except Exception as exc:
             last_error = exc
             sleep_for = REQUEST_DELAY_SECONDS * attempt + random.uniform(0.2, 0.8)
-            print(f"{symbol}: attempt {attempt} failed: {exc}; sleeping {sleep_for:.1f}s")
+            safe_print(f"{symbol}: attempt {attempt} failed: {exc}; sleeping {sleep_for:.1f}s")
             time.sleep(sleep_for)
     raise RuntimeError(f"{symbol}: failed after {MAX_RETRIES} attempts: {last_error}")
 
@@ -110,7 +116,7 @@ def main() -> None:
     updated = existing.copy()
     failures = []
 
-    print(f"Updating {len(symbols)} SPY symbols through {today.date().isoformat()}")
+    safe_print(f"Updating {len(symbols)} SPY symbols through {today.date().isoformat()}")
     for i, symbol in enumerate(symbols, start=1):
         start = symbol_start_date(existing, symbol, today)
         try:
@@ -120,7 +126,7 @@ def main() -> None:
                 updated.loc[series.index, symbol] = series
         except Exception as exc:
             failures.append({"symbol": symbol, "error": str(exc)})
-        print(f"{i:03d}/{len(symbols)} {symbol}")
+        safe_print(f"{i:03d}/{len(symbols)} {symbol}")
         time.sleep(REQUEST_DELAY_SECONDS + random.uniform(0.05, 0.25))
 
     updated = updated.sort_index()
@@ -129,10 +135,10 @@ def main() -> None:
 
     if failures:
         pd.DataFrame(failures).to_csv(FAILURE_FILE, index=False, encoding="utf-8-sig")
-        print(f"Failures: {len(failures)}")
+        safe_print(f"Failures: {len(failures)}")
     elif FAILURE_FILE.exists():
         FAILURE_FILE.unlink()
-        print("No failures")
+        safe_print("No failures")
 
 
 if __name__ == "__main__":
