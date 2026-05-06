@@ -10,4 +10,5 @@
 !update_history_cache.py
 !spy_current_stock_holdings.csv
 !spy_holdings_prices.csv
+!spy_history_update_failures.csv
 !README.md
