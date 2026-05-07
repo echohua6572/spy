@@ -157,7 +157,9 @@ def main() -> None:
         try:
             series = fetch_with_retries(symbol, start, today)
             if not series.empty:
-                updated[symbol] = updated.get(symbol, pd.Series(dtype=float)).combine_first(series)
+                updated = updated.reindex(updated.index.union(series.index))
+                if symbol not in updated.columns:
+                    updated[symbol] = pd.NA
                 updated.loc[series.index, symbol] = series
         except Exception as exc:
             failures.append({"symbol": symbol, "error": str(exc)})
