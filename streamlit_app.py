@@ -31,8 +31,12 @@ st.set_page_config(
 )
 
 
+def data_file_versions() -> tuple[float, float]:
+    return PRICE_FILE.stat().st_mtime, HOLDINGS_FILE.stat().st_mtime
+
+
 @st.cache_data(show_spinner=False)
-def load_data() -> tuple[pd.DataFrame, pd.DataFrame]:
+def load_data(file_versions: tuple[float, float]) -> tuple[pd.DataFrame, pd.DataFrame]:
     prices = pd.read_csv(PRICE_FILE, index_col=0, parse_dates=True).sort_index()
     holdings = pd.read_csv(HOLDINGS_FILE)
     holdings["Ticker"] = holdings["Ticker"].astype(str).str.strip()
@@ -243,7 +247,7 @@ def format_positions(frame: pd.DataFrame) -> pd.io.formats.style.Styler:
 
 
 def main() -> None:
-    prices, holdings = load_data()
+    prices, holdings = load_data(data_file_versions())
     cache_date = prices.index[-1].date()
     today = pd.Timestamp.utcnow().date()
     cache_age_days = max(0, (today - cache_date).days)
