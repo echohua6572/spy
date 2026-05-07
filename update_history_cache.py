@@ -139,10 +139,21 @@ def main() -> None:
     cache_date = existing.index[-1].date().isoformat() if not existing.empty else None
     spy_latest = fetch_with_retries("SPY", today - pd.Timedelta(days=14), today)
     market_date = latest_completed_market_date(spy_latest)
+    market_ts = pd.Timestamp(market_date) if market_date else None
+    trimmed_future_rows = False
+    if market_ts is not None and not existing.empty:
+        future_rows = existing.index > market_ts
+        if future_rows.any():
+            safe_print(f"Trimming {future_rows.sum()} rows after completed market date {market_date}")
+            existing = existing.loc[~future_rows].copy()
+            cache_date = existing.index[-1].date().isoformat() if not existing.empty else None
+            trimmed_future_rows = True
     if cache_date and market_date and pd.Timestamp(cache_date) >= pd.Timestamp(market_date):
         message = f"缓存已是最新：{cache_date}，市场最新日线：{market_date}"
         safe_print(message)
         write_status("skipped", message, cache_date, market_date)
+        if trimmed_future_rows:
+            existing.to_csv(PRICE_FILE, encoding="utf-8-sig")
         return
 
     holdings = fetch_spy_stock_holdings()
@@ -156,6 +167,8 @@ def main() -> None:
         start = symbol_start_date(existing, symbol, today)
         try:
             series = fetch_with_retries(symbol, start, today)
+            if market_ts is not None:
+                series = series.loc[series.index <= market_ts]
             if not series.empty:
                 updated = updated.reindex(updated.index.union(series.index))
                 if symbol not in updated.columns:
