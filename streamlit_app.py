@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 import json
 import math
 import time
@@ -16,7 +17,9 @@ import streamlit as st
 ROOT = Path(__file__).resolve().parent
 PRICE_FILE = ROOT / "spy_holdings_prices.csv"
 HOLDINGS_FILE = ROOT / "spy_current_stock_holdings.csv"
+SP500_WIKI_URL = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
 DEFAULT_TOP_N = 10
+DEFAULT_SECTOR_CAP = 4
 TRADE_COST = 0.001
 DEFAULT_GITHUB_REPOSITORY = "echohua6572/spy"
 DEFAULT_GITHUB_WORKFLOW = "update-history.yml"
@@ -36,10 +39,36 @@ def data_file_versions() -> tuple[float, float]:
 
 
 @st.cache_data(show_spinner=False)
+def fetch_sp500_sectors() -> pd.DataFrame:
+    try:
+        req = urllib.request.Request(SP500_WIKI_URL, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=30) as response:
+            html = response.read().decode("utf-8", "ignore")
+        tables = pd.read_html(io.StringIO(html))
+    except Exception:
+        return pd.DataFrame(columns=["Ticker", "Sector"])
+
+    for table in tables:
+        if {"Symbol", "GICS Sector"}.issubset(table.columns):
+            sectors = table[["Symbol", "GICS Sector"]].copy()
+            sectors = sectors.rename(columns={"Symbol": "Ticker", "GICS Sector": "Sector"})
+            sectors["Ticker"] = sectors["Ticker"].astype(str).str.strip().str.replace(".", "-", regex=False)
+            sectors["Sector"] = sectors["Sector"].astype(str).str.strip()
+            return sectors.drop_duplicates("Ticker")
+
+    return pd.DataFrame(columns=["Ticker", "Sector"])
+
+
+@st.cache_data(show_spinner=False)
 def load_data(file_versions: tuple[float, float]) -> tuple[pd.DataFrame, pd.DataFrame]:
     prices = pd.read_csv(PRICE_FILE, index_col=0, parse_dates=True).sort_index()
     holdings = pd.read_csv(HOLDINGS_FILE)
     holdings["Ticker"] = holdings["Ticker"].astype(str).str.strip()
+    if "Sector" not in holdings.columns or holdings["Sector"].isna().all():
+        sectors = fetch_sp500_sectors()
+        holdings = holdings.merge(sectors, on="Ticker", how="left")
+    holdings["Sector"] = holdings["Sector"].fillna("Unknown").astype(str).str.strip()
+    holdings.loc[holdings["Ticker"].eq("CTRA") & holdings["Sector"].eq("Unknown"), "Sector"] = "Energy"
     holdings = holdings.drop_duplicates("Ticker").set_index("Ticker")
     common = [ticker for ticker in prices.columns if ticker in holdings.index]
     return prices[common], holdings
@@ -157,7 +186,46 @@ def last_month_end(index: pd.DatetimeIndex) -> pd.Timestamp:
     return pd.Timestamp(dates[-1])
 
 
-def composite_momentum(prices: pd.DataFrame, date: pd.Timestamp, top_n: int) -> pd.DataFrame:
+def sector_for_symbol(holdings: pd.DataFrame, symbol: str) -> str:
+    if symbol not in holdings.index:
+        return "Unknown"
+    sector = str(holdings.loc[symbol].get("Sector", "Unknown")).strip()
+    return sector if sector and sector.lower() != "nan" else "Unknown"
+
+
+def apply_sector_cap(
+    scores: pd.DataFrame,
+    holdings: pd.DataFrame,
+    top_n: int,
+    sector_cap: int,
+) -> pd.DataFrame:
+    if scores.empty:
+        return scores
+
+    selected = []
+    sector_counts: dict[str, int] = {}
+    for symbol in scores.index:
+        sector = sector_for_symbol(holdings, symbol)
+        if sector != "Unknown" and sector_cap > 0:
+            if sector_counts.get(sector, 0) >= sector_cap:
+                continue
+            sector_counts[sector] = sector_counts.get(sector, 0) + 1
+        selected.append(symbol)
+        if len(selected) >= top_n:
+            break
+
+    limited = scores.loc[selected].copy()
+    limited["rank"] = range(1, len(limited) + 1)
+    return limited
+
+
+def composite_momentum(
+    prices: pd.DataFrame,
+    holdings: pd.DataFrame,
+    date: pd.Timestamp,
+    top_n: int,
+    sector_cap: int,
+) -> pd.DataFrame:
     history = prices.loc[:date]
     if len(history) < 253:
         return pd.DataFrame()
@@ -180,8 +248,7 @@ def composite_momentum(prices: pd.DataFrame, date: pd.Timestamp, top_n: int) -> 
 
     raw["score"] = score
     raw = raw.sort_values("score", ascending=False)
-    raw["rank"] = range(1, len(raw) + 1)
-    return raw.head(top_n)
+    return apply_sector_cap(raw, holdings, top_n, sector_cap)
 
 
 def build_positions(
@@ -202,12 +269,14 @@ def build_positions(
         market_value = shares * price
         invested += market_value
         name = str(holdings.loc[symbol].get("Description", "")) if symbol in holdings.index else ""
+        sector = sector_for_symbol(holdings, symbol)
         spy_weight = float(holdings.loc[symbol].get("weight", 0)) if symbol in holdings.index else 0
         rows.append(
             {
                 "排名": int(row["rank"]),
                 "代码": symbol,
                 "名称": name,
+                "行业": sector,
                 "价格": price,
                 "目标权重": 1 / top_n,
                 "目标金额": target_value,
@@ -262,6 +331,7 @@ def main() -> None:
         st.header("参数")
         capital = st.number_input("当前总资产（美元）", min_value=1_000.0, value=100_000.0, step=1_000.0)
         top_n = st.selectbox("持仓数量", [5, 10, 15, 20], index=1)
+        sector_cap = st.selectbox("单行业最多持仓", [2, 3, 4, 5, 10], index=2)
         refresh = st.button("刷新最新报价", type="primary", use_container_width=True)
         st.divider()
         st.write(f"股票池数量：{len(prices.columns)}")
@@ -294,8 +364,8 @@ def main() -> None:
     rebalance_date = last_month_end(live_prices.index)
     latest_date = live_prices.index[-1]
 
-    rebalance_scores = composite_momentum(live_prices, rebalance_date, top_n)
-    latest_scores = composite_momentum(live_prices, latest_date, top_n)
+    rebalance_scores = composite_momentum(live_prices, holdings, rebalance_date, top_n, sector_cap)
+    latest_scores = composite_momentum(live_prices, holdings, latest_date, top_n, sector_cap)
     rebalance_positions, invested, cash = build_positions(
         rebalance_scores,
         live_prices,

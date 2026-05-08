@@ -20,6 +20,7 @@ HOLDINGS_FILE = ROOT / "spy_current_stock_holdings.csv"
 FAILURE_FILE = ROOT / "spy_history_update_failures.csv"
 STATUS_FILE = ROOT / "spy_history_update_status.json"
 HOLDINGS_URL = "https://companiesmarketcap.com/eur/spdr-sp-500-etf/holdings/"
+SP500_WIKI_URL = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
 USER_AGENT = "Mozilla/5.0"
 HISTORY_DAYS_FOR_NEW_SYMBOLS = 550
 OVERLAP_DAYS = 10
@@ -32,6 +33,27 @@ def safe_print(message: str) -> None:
         print(message)
 
 
+def fetch_sp500_sectors() -> pd.DataFrame:
+    try:
+        req = urllib.request.Request(SP500_WIKI_URL, headers={"User-Agent": USER_AGENT})
+        html = urllib.request.urlopen(req, timeout=30).read().decode("utf-8", "ignore")
+        tables = pd.read_html(io.StringIO(html))
+    except Exception as exc:
+        safe_print(f"Sector lookup failed: {exc}")
+        return pd.DataFrame(columns=["Ticker", "Sector"])
+
+    for table in tables:
+        if {"Symbol", "GICS Sector"}.issubset(table.columns):
+            sectors = table[["Symbol", "GICS Sector"]].copy()
+            sectors = sectors.rename(columns={"Symbol": "Ticker", "GICS Sector": "Sector"})
+            sectors["Ticker"] = sectors["Ticker"].astype(str).str.strip().str.replace(".", "-", regex=False)
+            sectors["Sector"] = sectors["Sector"].astype(str).str.strip()
+            return sectors.drop_duplicates("Ticker")
+
+    safe_print("Sector lookup failed: S&P 500 table not found")
+    return pd.DataFrame(columns=["Ticker", "Sector"])
+
+
 def fetch_spy_stock_holdings() -> pd.DataFrame:
     req = urllib.request.Request(HOLDINGS_URL, headers={"User-Agent": USER_AGENT})
     html = urllib.request.urlopen(req, timeout=30).read().decode("utf-8", "ignore")
@@ -40,21 +62,26 @@ def fetch_spy_stock_holdings() -> pd.DataFrame:
     holdings["Ticker"] = holdings["Ticker"].astype(str).str.strip().str.replace(".", "-", regex=False)
     holdings["Weight %"] = holdings["Weight %"].astype(str).str.replace("%", "", regex=False)
     holdings["weight"] = pd.to_numeric(holdings["Weight %"], errors="coerce")
-    skip_words = "CASH|EQUIVALENTS|COLLATERAL|FUTURE|INDEX"
+    skip_words = "CASH|EQUIVALENTS|COLLATERAL|FUTURE|INDEX|CONTRA"
     stocks = holdings[
         holdings["Ticker"].ne("nan")
         & holdings["Ticker"].ne("")
-        & ~holdings["Ticker"].isin({"USD"})
+        & ~holdings["Ticker"].isin({"-", "USD"})
         & holdings["weight"].notna()
+        & holdings["Name"].astype(str).str.upper().ne("US DOLLAR")
         & ~holdings["Name"].astype(str).str.contains(skip_words, case=False, regex=True)
     ].copy()
     stocks = stocks.rename(columns={"Name": "Description"})
-    return (
+    stocks = (
         stocks[["Ticker", "Description", "weight"]]
         .drop_duplicates("Ticker")
         .sort_values("weight", ascending=False)
         .reset_index(drop=True)
     )
+    sectors = fetch_sp500_sectors()
+    stocks = stocks.merge(sectors, on="Ticker", how="left")
+    stocks["Sector"] = stocks["Sector"].fillna("Unknown")
+    return stocks[["Ticker", "Description", "Sector", "weight"]]
 
 
 def yahoo_chart(symbol: str, start: pd.Timestamp, end: pd.Timestamp) -> pd.Series:
