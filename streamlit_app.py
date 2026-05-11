@@ -17,6 +17,7 @@ import streamlit as st
 ROOT = Path(__file__).resolve().parent
 PRICE_FILE = ROOT / "spy_holdings_prices.csv"
 HOLDINGS_FILE = ROOT / "spy_current_stock_holdings.csv"
+HOLDINGS_URL = "https://companiesmarketcap.com/eur/spdr-sp-500-etf/holdings/"
 SP500_WIKI_URL = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
 DEFAULT_TOP_N = 10
 DEFAULT_SECTOR_CAP = 4
@@ -63,15 +64,76 @@ def fetch_sp500_sectors() -> pd.DataFrame:
 def load_data(file_versions: tuple[float, float]) -> tuple[pd.DataFrame, pd.DataFrame]:
     prices = pd.read_csv(PRICE_FILE, index_col=0, parse_dates=True).sort_index()
     holdings = pd.read_csv(HOLDINGS_FILE)
-    holdings["Ticker"] = holdings["Ticker"].astype(str).str.strip()
+    holdings["Ticker"] = holdings["Ticker"].astype(str).str.strip().str.replace(".", "-", regex=False)
     if "Sector" not in holdings.columns or holdings["Sector"].isna().all():
         sectors = fetch_sp500_sectors()
         holdings = holdings.merge(sectors, on="Ticker", how="left")
     holdings["Sector"] = holdings["Sector"].fillna("Unknown").astype(str).str.strip()
     holdings.loc[holdings["Ticker"].eq("CTRA") & holdings["Sector"].eq("Unknown"), "Sector"] = "Energy"
     holdings = holdings.drop_duplicates("Ticker").set_index("Ticker")
-    common = [ticker for ticker in prices.columns if ticker in holdings.index]
-    return prices[common], holdings
+    prices.columns = prices.columns.astype(str).str.strip().str.replace(".", "-", regex=False)
+    return prices, holdings
+
+
+@st.cache_data(show_spinner=False, ttl=900)
+def fetch_latest_spy_holdings() -> tuple[pd.DataFrame, str | None]:
+    try:
+        req = urllib.request.Request(HOLDINGS_URL, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=30) as response:
+            html = response.read().decode("utf-8", "ignore")
+        holdings = pd.read_html(io.StringIO(html))[0].copy()
+    except Exception as exc:
+        return pd.DataFrame(), str(exc)
+
+    try:
+        holdings = holdings.rename(columns={col: str(col).strip() for col in holdings.columns})
+        holdings["Ticker"] = holdings["Ticker"].astype(str).str.strip().str.replace(".", "-", regex=False)
+        holdings["Weight %"] = holdings["Weight %"].astype(str).str.replace("%", "", regex=False)
+        holdings["weight"] = pd.to_numeric(holdings["Weight %"], errors="coerce")
+        skip_words = "CASH|EQUIVALENTS|COLLATERAL|FUTURE|INDEX|CONTRA"
+        stocks = holdings[
+            holdings["Ticker"].ne("nan")
+            & holdings["Ticker"].ne("")
+            & ~holdings["Ticker"].isin({"-", "USD"})
+            & holdings["weight"].notna()
+            & holdings["Name"].astype(str).str.upper().ne("US DOLLAR")
+            & ~holdings["Name"].astype(str).str.contains(skip_words, case=False, regex=True)
+        ].copy()
+        stocks = stocks.rename(columns={"Name": "Description"})
+        stocks = (
+            stocks[["Ticker", "Description", "weight"]]
+            .drop_duplicates("Ticker")
+            .sort_values("weight", ascending=False)
+            .reset_index(drop=True)
+        )
+        sectors = fetch_sp500_sectors()
+        stocks = stocks.merge(sectors, on="Ticker", how="left")
+        stocks["Sector"] = stocks["Sector"].fillna("Unknown")
+        return stocks[["Ticker", "Description", "Sector", "weight"]], None
+    except Exception as exc:
+        return pd.DataFrame(), str(exc)
+
+
+def apply_latest_holdings(
+    all_prices: pd.DataFrame,
+    cached_holdings: pd.DataFrame,
+    latest_holdings: pd.DataFrame,
+) -> tuple[pd.DataFrame, pd.DataFrame, list[str], list[str], list[str], str]:
+    if latest_holdings.empty:
+        common = [ticker for ticker in all_prices.columns if ticker in cached_holdings.index]
+        missing_history = [ticker for ticker in cached_holdings.index if ticker not in all_prices.columns]
+        return all_prices[common], cached_holdings, [], [], missing_history, "本地缓存持仓"
+
+    latest = latest_holdings.copy()
+    latest["Ticker"] = latest["Ticker"].astype(str).str.strip().str.replace(".", "-", regex=False)
+    latest = latest.drop_duplicates("Ticker").set_index("Ticker")
+    cached_symbols = set(cached_holdings.index)
+    latest_symbols = set(latest.index)
+    added = [symbol for symbol in latest.index if symbol not in cached_symbols]
+    removed = sorted(cached_symbols - latest_symbols)
+    common = [ticker for ticker in all_prices.columns if ticker in latest.index]
+    missing_history = [ticker for ticker in latest.index if ticker not in all_prices.columns]
+    return all_prices[common], latest, added, removed, missing_history, "实时检查持仓"
 
 
 def yahoo_spark_quotes(symbols: list[str]) -> dict[str, dict[str, object]]:
@@ -316,8 +378,8 @@ def format_positions(frame: pd.DataFrame) -> pd.io.formats.style.Styler:
 
 
 def main() -> None:
-    prices, holdings = load_data(data_file_versions())
-    cache_date = prices.index[-1].date()
+    all_prices, cached_holdings = load_data(data_file_versions())
+    cache_date = all_prices.index[-1].date()
     today = pd.Timestamp.utcnow().date()
     cache_age_days = max(0, (today - cache_date).days)
 
@@ -333,9 +395,40 @@ def main() -> None:
         top_n = st.selectbox("持仓数量", [5, 10, 15, 20], index=1)
         sector_cap = st.selectbox("单行业最多持仓", [2, 3, 4, 5, 10], index=2)
         refresh = st.button("刷新最新报价", type="primary", use_container_width=True)
+        refresh_holdings = st.button("重新检查 SPY 持仓", use_container_width=True)
+
+    if refresh_holdings:
+        fetch_latest_spy_holdings.clear()
+
+    latest_holdings, holdings_error = fetch_latest_spy_holdings()
+    prices, holdings, added_symbols, removed_symbols, missing_history, holdings_source = apply_latest_holdings(
+        all_prices,
+        cached_holdings,
+        latest_holdings,
+    )
+
+    with st.sidebar:
         st.divider()
-        st.write(f"股票池数量：{len(prices.columns)}")
+        st.write(f"股票池来源：{holdings_source}")
+        st.write(f"SPY 持仓数量：{len(holdings.index)}")
+        st.write(f"可计算历史价格数量：{len(prices.columns)}")
         st.write(f"交易成本假设：{TRADE_COST:.2%} 换手额")
+        if holdings_error:
+            st.warning(f"实时持仓检查失败，当前使用本地缓存持仓：{holdings_error}")
+        elif added_symbols or removed_symbols:
+            st.warning(
+                "检测到 SPY 持仓变化。"
+                f"新增：{', '.join(added_symbols) if added_symbols else '无'}；"
+                f"移除：{', '.join(removed_symbols) if removed_symbols else '无'}。"
+            )
+        else:
+            st.success("已检查 SPY 持仓：未发现变化。")
+        if missing_history:
+            preview = ", ".join(missing_history[:12])
+            suffix = "..." if len(missing_history) > 12 else ""
+            st.warning(
+                f"{len(missing_history)} 只当前持仓缺少历史价格缓存，暂不参与动量排名：{preview}{suffix}"
+            )
         st.info(
             "最新价格会在打开页面或点击刷新时实时拉取。"
             "历史价格缓存不是当前报价，而是为了避免每次打开页面都重新下载 500 只股票的一年以上历史K线。"
@@ -353,9 +446,15 @@ def main() -> None:
                     "配置到 Streamlit Secrets 后，按钮会触发 update-history.yml。"
                 )
 
-    if "quotes" not in st.session_state or refresh:
-        quotes = yahoo_spark_quotes(list(prices.columns))
+    quote_symbols = list(prices.columns)
+    if (
+        "quotes" not in st.session_state
+        or refresh
+        or st.session_state.get("quote_symbols") != quote_symbols
+    ):
+        quotes = yahoo_spark_quotes(quote_symbols)
         st.session_state["quotes"] = quotes
+        st.session_state["quote_symbols"] = quote_symbols
         st.session_state["quote_refreshed_at"] = display_time_now()
     else:
         quotes = st.session_state["quotes"]
@@ -421,10 +520,12 @@ def main() -> None:
             **实盘口径**
 
             - 月度策略默认使用最近一次完整月末的动量排名。
+            - 页面会先检查最新 SPY 持仓；若发现持仓变化，本次页面计算会使用最新持仓股票池。
             - 页面首次打开和刷新按钮都会重新拉取 Yahoo 最新报价，并重算月度持仓和今日候选。
             - `spy_holdings_prices.csv` 是历史动量窗口缓存，不是当前报价缓存。
+            - 若新增 SPY 持仓尚未补足历史价格缓存，该股票会先暂不参与动量排名；点击后台更新历史缓存后会补齐。
             - 股数按整股向下取整，剩余金额显示为现金。
-            - 当前股票池使用本项目内的 `spy_current_stock_holdings.csv`，属于当前成分股口径，存在幸存者偏差。
+            - 当前股票池属于当前成分股口径，不是历史无偏回测口径。
             """
         )
 

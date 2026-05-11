@@ -128,6 +128,25 @@ def load_existing_prices() -> pd.DataFrame:
     return pd.DataFrame()
 
 
+def load_existing_holdings() -> pd.DataFrame:
+    if not HOLDINGS_FILE.exists():
+        return pd.DataFrame(columns=["Ticker"])
+    holdings = pd.read_csv(HOLDINGS_FILE)
+    if "Ticker" not in holdings.columns:
+        return pd.DataFrame(columns=["Ticker"])
+    holdings["Ticker"] = holdings["Ticker"].astype(str).str.strip().str.replace(".", "-", regex=False)
+    return holdings
+
+
+def holdings_symbol_changes(previous: pd.DataFrame, current: pd.DataFrame) -> tuple[list[str], list[str]]:
+    previous_symbols = set(previous.get("Ticker", pd.Series(dtype=str)).dropna().astype(str))
+    current_symbols = list(current["Ticker"].dropna().astype(str))
+    current_symbol_set = set(current_symbols)
+    added = [symbol for symbol in current_symbols if symbol not in previous_symbols]
+    removed = sorted(previous_symbols - current_symbol_set)
+    return added, removed
+
+
 def write_status(status: str, message: str, cache_date: str | None = None, market_date: str | None = None) -> None:
     payload = {
         "status": status,
@@ -163,6 +182,7 @@ def latest_completed_market_date(spy_series: pd.Series) -> str | None:
 def main() -> None:
     today = pd.Timestamp.now("UTC").normalize().tz_localize(None) + pd.Timedelta(days=1)
     existing = load_existing_prices()
+    previous_holdings = load_existing_holdings()
     cache_date = existing.index[-1].date().isoformat() if not existing.empty else None
     spy_latest = fetch_with_retries("SPY", today - pd.Timedelta(days=14), today)
     market_date = latest_completed_market_date(spy_latest)
@@ -175,22 +195,48 @@ def main() -> None:
             existing = existing.loc[~future_rows].copy()
             cache_date = existing.index[-1].date().isoformat() if not existing.empty else None
             trimmed_future_rows = True
-    if cache_date and market_date and pd.Timestamp(cache_date) >= pd.Timestamp(market_date):
-        message = f"缓存已是最新：{cache_date}，市场最新日线：{market_date}"
+
+    holdings = fetch_spy_stock_holdings()
+    added_symbols, removed_symbols = holdings_symbol_changes(previous_holdings, holdings)
+    holdings_changed = bool(added_symbols or removed_symbols)
+    symbols = holdings["Ticker"].tolist()
+    holdings.to_csv(HOLDINGS_FILE, index=False, encoding="utf-8-sig")
+
+    safe_print(
+        "Fetched latest SPY holdings: "
+        f"{len(symbols)} symbols; added={added_symbols or 'none'}; removed={removed_symbols or 'none'}"
+    )
+
+    cache_is_current = bool(cache_date and market_date and pd.Timestamp(cache_date) >= pd.Timestamp(market_date))
+    if cache_is_current and not holdings_changed:
+        message = f"缓存已是最新：{cache_date}，市场最新日线：{market_date}，SPY 持仓股无变化"
         safe_print(message)
         write_status("skipped", message, cache_date, market_date)
         if trimmed_future_rows:
+            existing = existing.loc[:, [symbol for symbol in symbols if symbol in existing.columns]]
             existing.to_csv(PRICE_FILE, encoding="utf-8-sig")
         return
 
-    holdings = fetch_spy_stock_holdings()
-    holdings.to_csv(HOLDINGS_FILE, index=False, encoding="utf-8-sig")
-    symbols = holdings["Ticker"].tolist()
     updated = existing.copy()
     failures = []
+    if cache_is_current:
+        symbols_to_update = [
+            symbol
+            for symbol in symbols
+            if symbol not in existing.columns or existing[symbol].dropna().empty
+        ]
+        if symbols_to_update:
+            safe_print(
+                "SPY holdings changed while price cache is current; "
+                f"fetching history only for new/missing symbols: {symbols_to_update}"
+            )
+        else:
+            safe_print("SPY holdings changed, but no new symbols need price downloads")
+    else:
+        symbols_to_update = symbols
 
-    safe_print(f"Updating {len(symbols)} SPY symbols through {today.date().isoformat()}")
-    for i, symbol in enumerate(symbols, start=1):
+    safe_print(f"Updating {len(symbols_to_update)} SPY symbols through {today.date().isoformat()}")
+    for i, symbol in enumerate(symbols_to_update, start=1):
         start = symbol_start_date(existing, symbol, today)
         try:
             series = fetch_with_retries(symbol, start, today)
@@ -203,20 +249,27 @@ def main() -> None:
                 updated.loc[series.index, symbol] = series
         except Exception as exc:
             failures.append({"symbol": symbol, "error": str(exc)})
-        safe_print(f"{i:03d}/{len(symbols)} {symbol}")
+        safe_print(f"{i:03d}/{len(symbols_to_update)} {symbol}")
         time.sleep(REQUEST_DELAY_SECONDS + random.uniform(0.05, 0.25))
 
     updated = updated.sort_index()
     updated = updated.loc[:, [symbol for symbol in symbols if symbol in updated.columns]]
     updated.to_csv(PRICE_FILE, encoding="utf-8-sig")
+    new_cache_date = updated.index[-1].date().isoformat() if not updated.empty else cache_date
+    holdings_change_text = ""
+    if holdings_changed:
+        holdings_change_text = (
+            f"；新增：{','.join(added_symbols) or '无'}"
+            f"；移除：{','.join(removed_symbols) or '无'}"
+        )
 
     if failures:
         pd.DataFrame(failures).to_csv(FAILURE_FILE, index=False, encoding="utf-8-sig")
         safe_print(f"Failures: {len(failures)}")
         write_status(
             "completed_with_failures",
-            f"更新完成，但有 {len(failures)} 个失败",
-            updated.index[-1].date().isoformat() if not updated.empty else cache_date,
+            f"更新完成，但有 {len(failures)} 个失败{holdings_change_text}",
+            new_cache_date,
             market_date,
         )
     elif FAILURE_FILE.exists():
@@ -224,15 +277,15 @@ def main() -> None:
         safe_print("No failures")
         write_status(
             "completed",
-            "历史缓存更新完成",
-            updated.index[-1].date().isoformat() if not updated.empty else cache_date,
+            f"历史缓存更新完成{holdings_change_text}",
+            new_cache_date,
             market_date,
         )
     else:
         write_status(
             "completed",
-            "历史缓存更新完成",
-            updated.index[-1].date().isoformat() if not updated.empty else cache_date,
+            f"历史缓存更新完成{holdings_change_text}",
+            new_cache_date,
             market_date,
         )
 
