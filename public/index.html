@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>SPY 持仓股 Top10 综合动量监控</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <aside class="sidebar">
+      <div class="sidebar-inner">
+        <h2>参数</h2>
+        <label class="field">
+          <span>当前总资产（美元）</span>
+          <input id="capital-input" type="number" min="1000" step="1000" value="100000" />
+        </label>
+        <label class="field">
+          <span>持仓数量</span>
+          <select id="top-n-select">
+            <option value="5">5</option>
+            <option value="10" selected>10</option>
+            <option value="15">15</option>
+            <option value="20">20</option>
+          </select>
+        </label>
+        <label class="field">
+          <span>单行业最多持仓</span>
+          <select id="sector-cap-select">
+            <option value="2">2</option>
+            <option value="3">3</option>
+            <option value="4" selected>4</option>
+            <option value="5">5</option>
+            <option value="10">10</option>
+          </select>
+        </label>
+        <label class="field">
+          <span>SPY 权重过滤</span>
+          <select id="weight-filter-select">
+            <option value="0" selected>不过滤（原方案）</option>
+            <option value="0.05">&gt; 0.05%</option>
+            <option value="0.1">&gt; 0.1%</option>
+            <option value="0.2">&gt; 0.2%</option>
+          </select>
+        </label>
+        <button id="refresh-quotes-button" class="primary-button" type="button">刷新最新报价</button>
+        <button id="refresh-holdings-button" class="secondary-button" type="button">重新检查 SPY 持仓</button>
+
+        <div class="side-section">
+          <p id="pool-source">股票池来源：--</p>
+          <p id="pool-count">SPY 持仓数量：--</p>
+          <p id="price-count">可计算历史价格数量：--</p>
+          <p>交易成本假设：0.10% 换手额</p>
+        </div>
+
+        <div id="notice-stack" class="notice-stack"></div>
+
+        <div class="side-section">
+          <h3>历史缓存</h3>
+          <button id="trigger-update-button" class="secondary-button" type="button">触发后台更新历史缓存</button>
+          <p id="update-result" class="muted"></p>
+        </div>
+      </div>
+    </aside>
+
+    <main class="main">
+      <section class="intro">
+        <h1>SPY 持仓股 Top10 综合动量监控</h1>
+        <p>
+          月度轮动策略：每月最后一个交易日，选择 SPY 当前持仓股中综合动量排名前 N 的股票，等权持有。
+          页面刷新最新报价；历史缓存只用于计算 1M/3M/6M/12M 动量窗口。
+        </p>
+      </section>
+
+      <section class="metrics" aria-label="关键状态">
+        <div>
+          <span>最近月末调仓日</span>
+          <strong id="rebalance-date">--</strong>
+        </div>
+        <div>
+          <span>最新报价日期</span>
+          <strong id="quote-date">--</strong>
+        </div>
+        <div>
+          <span>成功报价数</span>
+          <strong id="quote-count">--</strong>
+        </div>
+        <div>
+          <span>历史缓存截至</span>
+          <strong id="cache-date">--</strong>
+        </div>
+        <div>
+          <span>刷新时间</span>
+          <strong id="refresh-time">--</strong>
+        </div>
+      </section>
+
+      <nav class="tabs" aria-label="视图切换">
+        <button class="tab-button active" data-tab="monthly" type="button">月度策略应持仓</button>
+        <button class="tab-button" data-tab="today" type="button">今日重算候选</button>
+        <button class="tab-button" data-tab="explain" type="button">说明</button>
+      </nav>
+
+      <section id="monthly-panel" class="tab-panel active">
+        <h2>月度策略应持仓</h2>
+        <div class="summary-strip">
+          <div><span>目标投入</span><strong id="monthly-invested">--</strong></div>
+          <div><span>剩余现金</span><strong id="monthly-cash">--</strong></div>
+          <div><span>单股目标金额</span><strong id="monthly-target">--</strong></div>
+        </div>
+        <div class="table-wrap">
+          <table id="monthly-table"></table>
+        </div>
+      </section>
+
+      <section id="today-panel" class="tab-panel">
+        <h2>今日重算候选</h2>
+        <p class="muted">这是用最新报价行重算的候选名单，用于观察，不代表月度策略每天调仓。</p>
+        <div class="summary-strip">
+          <div><span>目标投入</span><strong id="today-invested">--</strong></div>
+          <div><span>剩余现金</span><strong id="today-cash">--</strong></div>
+          <div><span>单股目标金额</span><strong id="today-target">--</strong></div>
+        </div>
+        <div class="table-wrap">
+          <table id="today-table"></table>
+        </div>
+      </section>
+
+      <section id="explain-panel" class="tab-panel prose">
+        <h2>说明</h2>
+        <p><strong>综合动量公式：</strong>1个月动量 + 3个月动量 + 6个月动量 + 12个月动量 - 0.5 × 近63日波动率惩罚。</p>
+        <p>每一项先在股票池内做横截面标准化，再合成综合分。页面会先检查最新 SPY 持仓；若新增持仓缺少历史价格缓存，该股票会暂不参与动量排名。</p>
+        <p>Cloudflare Pages 版本使用静态 CSV 历史缓存和 Pages Functions 报价接口；后台历史缓存仍由 GitHub Actions 更新。</p>
+      </section>
+    </main>
+
+    <script src="/app.js" type="module"></script>
+  </body>
+</html>

@@ -12,3 +12,16 @@
 !spy_holdings_prices.csv
 !spy_history_update_failures.csv
 !README.md
+!package.json
+!scripts/
+!scripts/build-cloudflare-pages.mjs
+!public/
+!public/index.html
+!public/styles.css
+!public/app.js
+!public/_headers
+!functions/
+!functions/api/
+!functions/api/quotes.js
+!functions/api/latest-holdings.js
+!functions/api/dispatch-update.js
