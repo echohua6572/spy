@@ -1,0 +1,11 @@
+/data/*
+  Cache-Control: no-cache
+
+/app.js
+  Cache-Control: no-cache
+
+/styles.css
+  Cache-Control: no-cache
+
+/*
+  X-Content-Type-Options: nosniff
