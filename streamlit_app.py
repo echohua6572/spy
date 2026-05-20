@@ -21,6 +21,7 @@ HOLDINGS_URL = "https://companiesmarketcap.com/eur/spdr-sp-500-etf/holdings/"
 SP500_WIKI_URL = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
 DEFAULT_TOP_N = 10
 DEFAULT_SECTOR_CAP = 4
+SPY_MIN_WEIGHT = 0.1
 TRADE_COST = 0.001
 DEFAULT_GITHUB_REPOSITORY = "echohua6572/spy"
 DEFAULT_GITHUB_WORKFLOW = "update-history.yml"
@@ -65,6 +66,8 @@ def load_data(file_versions: tuple[float, float]) -> tuple[pd.DataFrame, pd.Data
     prices = pd.read_csv(PRICE_FILE, index_col=0, parse_dates=True).sort_index()
     holdings = pd.read_csv(HOLDINGS_FILE)
     holdings["Ticker"] = holdings["Ticker"].astype(str).str.strip().str.replace(".", "-", regex=False)
+    holdings["weight"] = pd.to_numeric(holdings["weight"], errors="coerce")
+    holdings = holdings[holdings["weight"].gt(SPY_MIN_WEIGHT)].copy()
     if "Sector" not in holdings.columns or holdings["Sector"].isna().all():
         sectors = fetch_sp500_sectors()
         holdings = holdings.merge(sectors, on="Ticker", how="left")
@@ -410,6 +413,7 @@ def main() -> None:
     with st.sidebar:
         st.divider()
         st.write(f"股票池来源：{holdings_source}")
+        st.write(f"SPY权重门槛：>{SPY_MIN_WEIGHT:.1f}%")
         st.write(f"SPY 持仓数量：{len(holdings.index)}")
         st.write(f"可计算历史价格数量：{len(prices.columns)}")
         st.write(f"交易成本假设：{TRADE_COST:.2%} 换手额")
