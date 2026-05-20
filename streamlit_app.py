@@ -129,6 +129,8 @@ def apply_latest_holdings(
 
     latest = latest_holdings.copy()
     latest["Ticker"] = latest["Ticker"].astype(str).str.strip().str.replace(".", "-", regex=False)
+    latest["weight"] = pd.to_numeric(latest["weight"], errors="coerce")
+    latest = latest[latest["weight"].gt(SPY_MIN_WEIGHT)].copy()
     latest = latest.drop_duplicates("Ticker").set_index("Ticker")
     cached_symbols = set(cached_holdings.index)
     latest_symbols = set(latest.index)
