@@ -274,6 +274,20 @@ def issuer_group_for_symbol(symbol: str) -> str:
     return ISSUER_GROUP_OVERRIDES.get(symbol, symbol)
 
 
+def collapse_issuer_groups(scores: pd.DataFrame) -> pd.DataFrame:
+    if scores.empty:
+        return scores
+
+    collapsed_rows = []
+    for _, group in scores.assign(issuer_group=scores.index.map(issuer_group_for_symbol)).groupby("issuer_group", sort=False):
+        collapsed_rows.append(group.sort_values("score", ascending=False).iloc[0])
+
+    collapsed = pd.DataFrame(collapsed_rows)
+    collapsed.index = [row.name for row in collapsed_rows]
+    collapsed = collapsed.drop(columns=["issuer_group"])
+    return collapsed.sort_values("score", ascending=False)
+
+
 def apply_sector_cap(
     scores: pd.DataFrame,
     holdings: pd.DataFrame,
@@ -285,18 +299,12 @@ def apply_sector_cap(
 
     selected = []
     sector_counts: dict[str, int] = {}
-    issuer_groups: set[str] = set()
     for symbol in scores.index:
-        issuer_group = issuer_group_for_symbol(symbol)
-        if issuer_group in issuer_groups:
-            continue
-
         sector = sector_for_symbol(holdings, symbol)
         if sector != "Unknown" and sector_cap > 0:
             if sector_counts.get(sector, 0) >= sector_cap:
                 continue
             sector_counts[sector] = sector_counts.get(sector, 0) + 1
-        issuer_groups.add(issuer_group)
         selected.append(symbol)
         if len(selected) >= top_n:
             break
@@ -335,6 +343,7 @@ def composite_momentum(
 
     raw["score"] = score
     raw = raw.sort_values("score", ascending=False)
+    raw = collapse_issuer_groups(raw)
     return apply_sector_cap(raw, holdings, top_n, sector_cap)
 
 
@@ -549,9 +558,9 @@ def main() -> None:
             - 月度策略默认使用最近一次完整月末的动量排名。
             - 页面会先检查最新 SPY 持仓；若发现持仓变化，本次页面计算会使用最新持仓股票池。
             - 页面首次打开和刷新按钮都会重新拉取 Yahoo 最新报价，并重算月度持仓和今日候选。
-            - 同一家公司如果有多个股票类别，例如 GOOG/GOOGL，只保留综合分更高的一只。
             - `spy_holdings_prices.csv` 是历史动量窗口缓存，不是当前报价缓存。
             - 若新增 SPY 持仓尚未补足历史价格缓存，该股票会先暂不参与动量排名；点击后台更新历史缓存后会补齐。
+            - 同一家公司如果有多个股票类别，例如 GOOG/GOOGL，只保留综合分更高的一只。
             - 股数按整股向下取整，剩余金额显示为现金。
             - 当前股票池属于当前成分股口径，不是历史无偏回测口径。
             """
