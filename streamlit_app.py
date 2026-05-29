@@ -22,6 +22,16 @@ SP500_WIKI_URL = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
 DEFAULT_TOP_N = 10
 DEFAULT_SECTOR_CAP = 4
 SPY_MIN_WEIGHT = 0.1
+ISSUER_GROUP_OVERRIDES = {
+    "GOOG": "ALPHABET",
+    "GOOGL": "ALPHABET",
+    "FOX": "FOX_CORP",
+    "FOXA": "FOX_CORP",
+    "NWS": "NEWS_CORP",
+    "NWSA": "NEWS_CORP",
+    "BRK-A": "BERKSHIRE_HATHAWAY",
+    "BRK-B": "BERKSHIRE_HATHAWAY",
+}
 TRADE_COST = 0.001
 DEFAULT_GITHUB_REPOSITORY = "echohua6572/spy"
 DEFAULT_GITHUB_WORKFLOW = "update-history.yml"
@@ -260,6 +270,10 @@ def sector_for_symbol(holdings: pd.DataFrame, symbol: str) -> str:
     return sector if sector and sector.lower() != "nan" else "Unknown"
 
 
+def issuer_group_for_symbol(symbol: str) -> str:
+    return ISSUER_GROUP_OVERRIDES.get(symbol, symbol)
+
+
 def apply_sector_cap(
     scores: pd.DataFrame,
     holdings: pd.DataFrame,
@@ -271,12 +285,18 @@ def apply_sector_cap(
 
     selected = []
     sector_counts: dict[str, int] = {}
+    issuer_groups: set[str] = set()
     for symbol in scores.index:
+        issuer_group = issuer_group_for_symbol(symbol)
+        if issuer_group in issuer_groups:
+            continue
+
         sector = sector_for_symbol(holdings, symbol)
         if sector != "Unknown" and sector_cap > 0:
             if sector_counts.get(sector, 0) >= sector_cap:
                 continue
             sector_counts[sector] = sector_counts.get(sector, 0) + 1
+        issuer_groups.add(issuer_group)
         selected.append(symbol)
         if len(selected) >= top_n:
             break
@@ -418,6 +438,7 @@ def main() -> None:
         st.write(f"SPY权重门槛：>{SPY_MIN_WEIGHT:.1f}%")
         st.write(f"SPY 持仓数量：{len(holdings.index)}")
         st.write(f"可计算历史价格数量：{len(prices.columns)}")
+        st.write("同公司多股类别：最多保留 1 只")
         st.write(f"交易成本假设：{TRADE_COST:.2%} 换手额")
         if holdings_error:
             st.warning(f"实时持仓检查失败，当前使用本地缓存持仓：{holdings_error}")
@@ -528,6 +549,7 @@ def main() -> None:
             - 月度策略默认使用最近一次完整月末的动量排名。
             - 页面会先检查最新 SPY 持仓；若发现持仓变化，本次页面计算会使用最新持仓股票池。
             - 页面首次打开和刷新按钮都会重新拉取 Yahoo 最新报价，并重算月度持仓和今日候选。
+            - 同一家公司如果有多个股票类别，例如 GOOG/GOOGL，只保留综合分更高的一只。
             - `spy_holdings_prices.csv` 是历史动量窗口缓存，不是当前报价缓存。
             - 若新增 SPY 持仓尚未补足历史价格缓存，该股票会先暂不参与动量排名；点击后台更新历史缓存后会补齐。
             - 股数按整股向下取整，剩余金额显示为现金。
